@@ -12,8 +12,31 @@ logger = logging.getLogger(__name__)
 
 CURRENT_CONDITION_URL= 'https://data.geo.admin.ch/ch.meteoschweiz.messwerte-aktuell/VQHA80.csv'
 
-FORECAST_URL= "https://app-prod-ws.meteoswiss-app.ch/v2/plzDetail?plz={:<06d}"
+FORECAST_URL= "https://app-prod-ws.meteoswiss-app.ch/v2/plzDetail?plz={}"
 FORECAST_USER_AGENT = "android-31 ch.admin.meteoswiss-2160000"
+
+
+class UnknownPostCode(Exception):
+    """MeteoSwiss has no forecast for a post code."""
+
+
+def _is_known_post_code(forecastJson) -> bool:
+    """The API answers 200 with a stub rather than 404, so absent data is the tell."""
+    return forecastJson is not None and "forecast" in forecastJson
+
+
+def plz_query(postCode) -> str:
+    """The six digits MeteoSwiss addresses a locality by: post code plus ZAZ.
+
+    A four digit post code is padded with ``00``, which is only correct where no
+    other locality shares it. Callers should resolve the ZAZ instead of relying
+    on that; see locality.py.
+    """
+    code = str(postCode).strip()
+    if len(code) == 6:
+        return code
+    return f"{int(code):04d}00"
+
 
 CONDITION_CLASSES = {
     "clear-night": [101],
@@ -216,12 +239,20 @@ class MeteoClient:
         )
 
 
+    def has_forecast(self, postCode) -> bool:
+        """Whether MeteoSwiss knows a locality code, without parsing the payload."""
+        return _is_known_post_code(self._get_forecast_json(postCode, self.language))
+
     ## Forecast
     def get_forecast(self, postCode) -> WeatherForecast | None:
         forecastJson = self._get_forecast_json(postCode, self.language)
         logger.debug("Forecast JSON: %s", forecastJson)
         if forecastJson is None:
             return None
+        if not _is_known_post_code(forecastJson):
+            raise UnknownPostCode(
+                f"MeteoSwiss has no forecast for post code {plz_query(postCode)}. "
+                "Post codes shared by several localities need the six digit form.")
 
         currentState = self._get_current_state(forecastJson)
         dailyForecast = self._get_daily_forecast(forecastJson)
@@ -377,7 +408,7 @@ class MeteoClient:
 
     def _get_forecast_json(self, postCode, language):
         try:
-            url = FORECAST_URL.format(int(postCode))
+            url = FORECAST_URL.format(plz_query(postCode))
             logger.debug("Requesting forecast data from %s...", url)
             return requests.get(url, headers =
                 { "User-Agent": FORECAST_USER_AGENT,
