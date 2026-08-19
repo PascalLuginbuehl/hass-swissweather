@@ -1,6 +1,7 @@
 """Config flow for Swiss Weather integration."""
 from __future__ import annotations
 
+import asyncio
 import csv
 from dataclasses import dataclass
 import logging
@@ -73,9 +74,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 2
 
-    _pending_input: dict[str, Any] | None = None
-    _pending_step: str = "user"
-    _localities: list[Locality] = []
+    def __init__(self) -> None:
+        self._pending_input: dict[str, Any] = {}
+        self._localities: list[Locality] = []
+        self._reconfiguring = False
+        self._selector_options: tuple[list, list] | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -85,52 +88,32 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self._show_user_form({}, {})
 
         _LOGGER.info("User chose %s", user_input)
-        post_code, errors = await self._resolve_post_code(user_input, "user")
+        post_code, errors = await self._resolve_post_code(user_input)
         if errors:
             return await self._show_user_form(user_input, errors)
         if post_code is None:
             return await self.async_step_locality()
-        return self._create_entry({**user_input, CONF_POST_CODE: post_code})
+        return self._finish({**user_input, CONF_POST_CODE: post_code})
 
-    async def _show_user_form(
-        self, defaults: dict[str, Any], errors: dict[str, str]
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        try:
-            station_options = await self._get_weather_station_options()
-            pollen_station_options = await self._get_pollen_station_options()
+        """Handle the reconfigure step."""
+        _LOGGER.info("Reconfigure with user dict %s", user_input)
+        self._reconfiguring = True
 
-            schema = vol.Schema({
-                vol.Required(CONF_POST_CODE,
-                             default=defaults.get(CONF_POST_CODE, vol.UNDEFINED)): str,
-                vol.Optional(CONF_STATION_CODE,
-                             default=defaults.get(CONF_STATION_CODE, vol.UNDEFINED)): SelectSelector(
-                    SelectSelectorConfig(
-                        options=station_options,
-                        mode=SelectSelectorMode.DROPDOWN
-                    ),
-                ),
-                vol.Optional(CONF_POLLEN_STATION_CODE,
-                             default=defaults.get(CONF_POLLEN_STATION_CODE, vol.UNDEFINED)): SelectSelector(
-                    SelectSelectorConfig(
-                        options=pollen_station_options,
-                        mode=SelectSelectorMode.DROPDOWN
-                    )
-                ),
-                vol.Required(CONF_WEATHER_WARNINGS_NUMBER,
-                             default=defaults.get(CONF_WEATHER_WARNINGS_NUMBER, 1)): NumberSelector(
-                    NumberSelectorConfig(min=0, max=10, mode=NumberSelectorMode.BOX, step=1)
-                )
-            })
-            return self.async_show_form(
-                step_id="user", data_schema=schema, errors=errors
-            )
-        except Exception:
-            _LOGGER.exception("Failed to retrieve station list, back to manual mode!")
-            # If the API broke, we still give user the option to manually enter the
-            # station code and continue.
-            return self.async_show_form(
-                data_schema=STEP_USER_DATA_SCHEMA_BACKUP, errors=errors
-            )
+        entry = self._get_reconfigure_entry()
+        stored = dict(entry.data) if entry is not None else {}
+        if not user_input:
+            return await self._show_reconfigure_form(stored, {})
+
+        self._abort_if_unique_id_mismatch()
+        post_code, errors = await self._resolve_post_code(user_input)
+        if errors:
+            return await self._show_reconfigure_form({**stored, **user_input}, errors)
+        if post_code is None:
+            return await self.async_step_locality()
+        return self._finish({**user_input, CONF_POST_CODE: post_code})
 
     async def async_step_locality(
         self, user_input: dict[str, Any] | None = None
@@ -154,19 +137,75 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         )
                     )
                 }),
-                description_placeholders={"post_code": str(
-                    (self._pending_input or {}).get(CONF_POST_CODE, ""))},
+                description_placeholders={
+                    "post_code": self._pending_input.get(CONF_POST_CODE, "")},
             )
 
-        resolved = {**(self._pending_input or {}), **user_input}
-        if self._pending_step == "reconfigure":
-            return self.async_update_reload_and_abort(
-                self._get_reconfigure_entry(), data_updates=resolved
+        return self._finish({**self._pending_input, **user_input})
+
+    async def _show_user_form(
+        self, defaults: dict[str, Any], errors: dict[str, str]
+    ) -> ConfigFlowResult:
+        try:
+            return self.async_show_form(
+                step_id="user",
+                data_schema=await self._config_schema(defaults),
+                errors=errors,
             )
-        return self._create_entry(resolved)
+        except Exception:
+            _LOGGER.exception("Failed to retrieve station list, back to manual mode!")
+            # If the API broke, we still give user the option to manually enter the
+            # station code and continue.
+            return self.async_show_form(
+                data_schema=STEP_USER_DATA_SCHEMA_BACKUP, errors=errors
+            )
+
+    async def _show_reconfigure_form(
+        self, defaults: dict[str, Any], errors: dict[str, str]
+    ) -> ConfigFlowResult:
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=await self._config_schema(defaults),
+            errors=errors,
+        )
+
+    async def _config_schema(self, defaults: dict[str, Any]) -> vol.Schema:
+        station_options, pollen_station_options = await self._get_selector_options()
+        given = {key: value for key, value in defaults.items() if value is not None}
+        return vol.Schema({
+            vol.Required(CONF_POST_CODE,
+                         default=given.get(CONF_POST_CODE, vol.UNDEFINED)): str,
+            vol.Optional(CONF_STATION_CODE,
+                         default=given.get(CONF_STATION_CODE, vol.UNDEFINED)): SelectSelector(
+                SelectSelectorConfig(
+                    options=station_options,
+                    mode=SelectSelectorMode.DROPDOWN
+                ),
+            ),
+            vol.Optional(CONF_POLLEN_STATION_CODE,
+                         default=given.get(CONF_POLLEN_STATION_CODE, vol.UNDEFINED)): SelectSelector(
+                SelectSelectorConfig(
+                    options=pollen_station_options,
+                    mode=SelectSelectorMode.DROPDOWN
+                )
+            ),
+            vol.Required(CONF_WEATHER_WARNINGS_NUMBER,
+                         default=given.get(CONF_WEATHER_WARNINGS_NUMBER, 1)): NumberSelector(
+                NumberSelectorConfig(min=0, max=10, mode=NumberSelectorMode.BOX, step=1)
+            )
+        })
+
+    async def _get_selector_options(self) -> tuple[list, list]:
+        """Both station dropdowns, fetched once and reused when a form redisplays."""
+        if self._selector_options is None:
+            self._selector_options = await asyncio.gather(
+                self._get_weather_station_options(),
+                self._get_pollen_station_options(),
+            )
+        return self._selector_options
 
     async def _resolve_post_code(
-        self, user_input: dict[str, Any], step_id: str
+        self, user_input: dict[str, Any]
     ) -> tuple[str | None, dict[str, str]]:
         """Pin a post code to one locality, remembering the form if we must ask.
 
@@ -189,7 +228,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return localities[0].code, {}
 
         self._pending_input = dict(user_input)
-        self._pending_step = step_id
         self._localities = localities
         return None, {}
 
@@ -204,71 +242,19 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("Could not look up the home locality")
             return None
 
+    def _finish(self, user_input: dict[str, Any]) -> ConfigFlowResult:
+        if self._reconfiguring:
+            return self.async_update_reload_and_abort(
+                self._get_reconfigure_entry(), data_updates=user_input
+            )
+        return self._create_entry(user_input)
+
     def _create_entry(self, user_input: dict[str, Any]) -> ConfigFlowResult:
         station_code = user_input.get(CONF_STATION_CODE) or "No Station"
         post_code = user_input.get(CONF_POST_CODE)
         pollen_station_code = user_input.get(CONF_POLLEN_STATION_CODE)
         return self.async_create_entry(title=f"Weather at {post_code} / {station_code or "No weather station"} / {pollen_station_code or "No pollen station"}", data=user_input,
             description=f"{user_input[CONF_POST_CODE]}")
-
-    async def async_step_reconfigure(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Handle the reconfigure step."""
-        _LOGGER.info("Reconfigure with user dict %s", user_input)
-
-        errors: dict[str, str] = {}
-        if user_input:
-            self._abort_if_unique_id_mismatch()
-            post_code, errors = await self._resolve_post_code(user_input, "reconfigure")
-            if not errors:
-                if post_code is None:
-                    return await self.async_step_locality()
-                return self.async_update_reload_and_abort(
-                    self._get_reconfigure_entry(),
-                    data_updates={**user_input, CONF_POST_CODE: post_code},
-                )
-
-        station_options = await self._get_weather_station_options()
-        pollen_station_options = await self._get_pollen_station_options()
-
-        reconfigure_entry = self._get_reconfigure_entry()
-        default_post_code = None
-        default_station_code = None
-        default_pollen_station_code = None
-        default_weather_alerts = 1
-        if reconfigure_entry is not None:
-            default_post_code = reconfigure_entry.data.get(CONF_POST_CODE)
-            default_station_code = reconfigure_entry.data.get(CONF_STATION_CODE)
-            default_pollen_station_code = reconfigure_entry.data.get(CONF_POLLEN_STATION_CODE)
-            default_weather_alerts = reconfigure_entry.data.get(CONF_WEATHER_WARNINGS_NUMBER)
-            if default_weather_alerts is None:
-                default_weather_alerts = 1
-
-        if user_input:
-            default_post_code = user_input.get(CONF_POST_CODE, default_post_code)
-
-        schema = vol.Schema({
-            vol.Required(CONF_POST_CODE, default=default_post_code): str,
-            vol.Optional(CONF_STATION_CODE, default=default_station_code): SelectSelector(
-                SelectSelectorConfig(
-                    options=station_options,
-                    mode=SelectSelectorMode.DROPDOWN
-                ),
-            ),
-            vol.Optional(CONF_POLLEN_STATION_CODE, default=default_pollen_station_code): SelectSelector(
-                SelectSelectorConfig(
-                    options=pollen_station_options,
-                    mode=SelectSelectorMode.DROPDOWN
-                )
-            ),
-            vol.Required(CONF_WEATHER_WARNINGS_NUMBER, default=default_weather_alerts): NumberSelector(
-                NumberSelectorConfig(min=0, max=10, mode=NumberSelectorMode.BOX, step=1)
-            )
-        })
-        return self.async_show_form(
-            step_id="reconfigure", data_schema=schema, errors=errors
-        )
 
     def format_station_name_for_dropdown(self, station: WeatherStation) -> str:
         distance = self._get_distance_to_station(station)

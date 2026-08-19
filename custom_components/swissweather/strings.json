@@ -7,6 +7,14 @@
           "postCode": "Post number of your location"
         }
       },
+      "reconfigure": {
+        "data": {
+          "stationCode": "Weather station for current weather state",
+          "postCode": "Post number for forecast data",
+          "pollenStationCode": "Pollen measuring station",
+          "weatherWarningsNumber": "Number of weather warnings to show as separate entities (default: 1)"
+        }
+      },
       "locality": {
         "title": "Which locality?",
         "description": "Post code {post_code} covers more than one locality, and MeteoSwiss forecasts each of them separately.",

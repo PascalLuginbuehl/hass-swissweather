@@ -20,6 +20,11 @@ class UnknownPostCode(Exception):
     """MeteoSwiss has no forecast for a post code."""
 
 
+def _is_known_post_code(forecastJson) -> bool:
+    """The API answers 200 with a stub rather than 404, so absent data is the tell."""
+    return forecastJson is not None and "forecast" in forecastJson
+
+
 def plz_query(postCode) -> str:
     """The six digits MeteoSwiss addresses a locality by: post code plus ZAZ.
 
@@ -236,8 +241,7 @@ class MeteoClient:
 
     def has_forecast(self, postCode) -> bool:
         """Whether MeteoSwiss knows a locality code, without parsing the payload."""
-        forecastJson = self._get_forecast_json(postCode, self.language)
-        return forecastJson is not None and "forecast" in forecastJson
+        return _is_known_post_code(self._get_forecast_json(postCode, self.language))
 
     ## Forecast
     def get_forecast(self, postCode) -> WeatherForecast | None:
@@ -245,9 +249,7 @@ class MeteoClient:
         logger.debug("Forecast JSON: %s", forecastJson)
         if forecastJson is None:
             return None
-        if "forecast" not in forecastJson:
-            # The API answers 200 with a stub rather than a 404, so an unknown
-            # code otherwise looks like a working entity with an empty forecast.
+        if not _is_known_post_code(forecastJson):
             raise UnknownPostCode(
                 f"MeteoSwiss has no forecast for post code {plz_query(postCode)}. "
                 "Post codes shared by several localities need the six digit form.")
