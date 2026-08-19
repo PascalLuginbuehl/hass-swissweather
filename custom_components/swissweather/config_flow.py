@@ -30,8 +30,7 @@ from .const import (
     CONF_WEATHER_WARNINGS_NUMBER,
     DOMAIN,
 )
-from .locality import Locality, localities_for_post_code, locality_at
-from .meteo import MeteoClient, plz_query
+from .locality import Locality, forecastable_localities, locality_at
 from .pollen import PollenClient
 
 STATION_LIST_URL = "https://data.geo.admin.ch/ch.meteoschweiz.messnetz-automatisch/ch.meteoschweiz.messnetz-automatisch_en.csv"
@@ -45,18 +44,6 @@ STEP_USER_DATA_SCHEMA_BACKUP = vol.Schema(
         vol.Optional(CONF_POLLEN_STATION_CODE): str,
     }
 )
-
-def _forecastable_localities(post_code: str) -> list[Locality]:
-    """Localities MeteoSwiss actually has a forecast for under this post code.
-
-    A code it already accepts is taken as given; otherwise the post code is
-    shared, and only the localities it can forecast are worth offering.
-    """
-    client = MeteoClient()
-    if client.has_forecast(post_code):
-        return [Locality(post_code, plz_query(post_code))]
-    return [it for it in localities_for_post_code(post_code) if client.has_forecast(it.code)]
-
 
 @dataclass
 class WeatherStation:
@@ -217,7 +204,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return None, {CONF_POST_CODE: "invalid_post_code"}
         try:
             localities = await self.hass.async_add_executor_job(
-                _forecastable_localities, post_code)
+                forecastable_localities, post_code)
         except Exception:
             _LOGGER.exception("Could not check post code %s", post_code)
             return None, {CONF_POST_CODE: "cannot_check_post_code"}

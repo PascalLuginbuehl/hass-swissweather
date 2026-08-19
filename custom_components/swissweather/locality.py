@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 import requests
 
+from .meteo import MeteoClient
+
 LOCALITY_LAYER = "ch.swisstopo-vd.ortschaftenverzeichnis_plz"
 FIND_URL = "https://api3.geo.admin.ch/rest/services/api/MapServer/find"
 IDENTIFY_URL = "https://api3.geo.admin.ch/rest/services/api/MapServer/identify"
@@ -62,3 +64,18 @@ def locality_at(lat: float, lng: float) -> Locality | None:
         "tolerance": "0",
     })
     return found[0] if found else None
+
+
+def forecastable_localities(post_code: str) -> list[Locality]:
+    """The localities under a post code that MeteoSwiss will actually forecast.
+
+    A six digit code already names one locality, so it is narrowed to that entry;
+    a four digit one keeps every locality sharing it. Either way the register is
+    only a claim that the place exists, so each candidate is confirmed against
+    MeteoSwiss before it is offered.
+    """
+    candidates = localities_for_post_code(post_code[:4])
+    if len(post_code) == 6:
+        candidates = [it for it in candidates if it.code == post_code]
+    client = MeteoClient()
+    return [it for it in candidates if client.has_forecast(it.code)]
