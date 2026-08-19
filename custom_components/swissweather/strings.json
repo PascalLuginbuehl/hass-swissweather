@@ -4,14 +4,24 @@
       "user": {
         "data": {
           "stationCode": "Code of the weather station",
-          "postNumber": "Post number of your location"
+          "postCode": "Post number of your location"
+        }
+      },
+      "locality": {
+        "title": "Which locality?",
+        "description": "Post code {post_code} covers more than one locality, and MeteoSwiss forecasts each of them separately.",
+        "data": {
+          "postCode": "Locality"
         }
       }
     },
     "error": {
       "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
       "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
-      "unknown": "[%key:common::config_flow::error::unknown%]"
+      "unknown": "[%key:common::config_flow::error::unknown%]",
+      "cannot_check_post_code": "Could not reach MeteoSwiss to check this post code. Please try again.",
+      "no_forecast_for_post_code": "MeteoSwiss has no forecast for this post code.",
+      "invalid_post_code": "A post code is four digits, or six with the two digit locality suffix."
     },
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"

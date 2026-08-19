@@ -29,6 +29,8 @@ from .const import (
     CONF_WEATHER_WARNINGS_NUMBER,
     DOMAIN,
 )
+from .locality import Locality, localities_for_post_code, locality_at
+from .meteo import MeteoClient, plz_query
 from .pollen import PollenClient
 
 STATION_LIST_URL = "https://data.geo.admin.ch/ch.meteoschweiz.messnetz-automatisch/ch.meteoschweiz.messnetz-automatisch_en.csv"
@@ -42,6 +44,18 @@ STEP_USER_DATA_SCHEMA_BACKUP = vol.Schema(
         vol.Optional(CONF_POLLEN_STATION_CODE): str,
     }
 )
+
+def _forecastable_localities(post_code: str) -> list[Locality]:
+    """Localities MeteoSwiss actually has a forecast for under this post code.
+
+    A code it already accepts is taken as given; otherwise the post code is
+    shared, and only the localities it can forecast are worth offering.
+    """
+    client = MeteoClient()
+    if client.has_forecast(post_code):
+        return [Locality(post_code, plz_query(post_code))]
+    return [it for it in localities_for_post_code(post_code) if client.has_forecast(it.code)]
+
 
 @dataclass
 class WeatherStation:
@@ -59,46 +73,138 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 2
 
+    _pending_input: dict[str, Any] | None = None
+    _pending_step: str = "user"
+    _localities: list[Locality] = []
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle the initial step."""
         if user_input is None:
-            try:
-                station_options = await self._get_weather_station_options()
-                pollen_station_options = await self._get_pollen_station_options()
-
-                # Setup defaults if we're reconfiguring
-                schema = vol.Schema({
-                    vol.Required(CONF_POST_CODE): str,
-                    vol.Optional(CONF_STATION_CODE): SelectSelector(
-                        SelectSelectorConfig(
-                            options=station_options,
-                            mode=SelectSelectorMode.DROPDOWN
-                        ),
-                    ),
-                    vol.Optional(CONF_POLLEN_STATION_CODE): SelectSelector(
-                        SelectSelectorConfig(
-                            options=pollen_station_options,
-                            mode=SelectSelectorMode.DROPDOWN
-                        )
-                    ),
-                    vol.Required(CONF_WEATHER_WARNINGS_NUMBER, default=1): NumberSelector(
-                        NumberSelectorConfig(min=0, max=10, mode=NumberSelectorMode.BOX, step=1)
-                    )
-                })
-                return self.async_show_form(
-                    step_id="user", data_schema=schema
-                )
-            except Exception:
-                _LOGGER.exception("Failed to retrieve station list, back to manual mode!")
-                # If the API broke, we still give user the option to manually enter the
-                # station code and continue.
-                return self.async_show_form(
-                    data_schema=STEP_USER_DATA_SCHEMA_BACKUP
-                )
+            return await self._show_user_form({}, {})
 
         _LOGGER.info("User chose %s", user_input)
+        post_code, errors = await self._resolve_post_code(user_input, "user")
+        if errors:
+            return await self._show_user_form(user_input, errors)
+        if post_code is None:
+            return await self.async_step_locality()
+        return self._create_entry({**user_input, CONF_POST_CODE: post_code})
+
+    async def _show_user_form(
+        self, defaults: dict[str, Any], errors: dict[str, str]
+    ) -> ConfigFlowResult:
+        try:
+            station_options = await self._get_weather_station_options()
+            pollen_station_options = await self._get_pollen_station_options()
+
+            schema = vol.Schema({
+                vol.Required(CONF_POST_CODE,
+                             default=defaults.get(CONF_POST_CODE, vol.UNDEFINED)): str,
+                vol.Optional(CONF_STATION_CODE,
+                             default=defaults.get(CONF_STATION_CODE, vol.UNDEFINED)): SelectSelector(
+                    SelectSelectorConfig(
+                        options=station_options,
+                        mode=SelectSelectorMode.DROPDOWN
+                    ),
+                ),
+                vol.Optional(CONF_POLLEN_STATION_CODE,
+                             default=defaults.get(CONF_POLLEN_STATION_CODE, vol.UNDEFINED)): SelectSelector(
+                    SelectSelectorConfig(
+                        options=pollen_station_options,
+                        mode=SelectSelectorMode.DROPDOWN
+                    )
+                ),
+                vol.Required(CONF_WEATHER_WARNINGS_NUMBER,
+                             default=defaults.get(CONF_WEATHER_WARNINGS_NUMBER, 1)): NumberSelector(
+                    NumberSelectorConfig(min=0, max=10, mode=NumberSelectorMode.BOX, step=1)
+                )
+            })
+            return self.async_show_form(
+                step_id="user", data_schema=schema, errors=errors
+            )
+        except Exception:
+            _LOGGER.exception("Failed to retrieve station list, back to manual mode!")
+            # If the API broke, we still give user the option to manually enter the
+            # station code and continue.
+            return self.async_show_form(
+                data_schema=STEP_USER_DATA_SCHEMA_BACKUP, errors=errors
+            )
+
+    async def async_step_locality(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Pick which locality of a shared post code to forecast for."""
+        if user_input is None:
+            home = await self.hass.async_add_executor_job(self._home_locality)
+            options = sorted(
+                self._localities,
+                key=lambda it: (home is None or it.code != home.code, it.name),
+            )
+            return self.async_show_form(
+                step_id="locality",
+                data_schema=vol.Schema({
+                    vol.Required(CONF_POST_CODE, default=options[0].code): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[SelectOptionDict(value=it.code,
+                                                      label=f"{it.name} ({it.code})")
+                                     for it in options],
+                            mode=SelectSelectorMode.DROPDOWN
+                        )
+                    )
+                }),
+                description_placeholders={"post_code": str(
+                    (self._pending_input or {}).get(CONF_POST_CODE, ""))},
+            )
+
+        resolved = {**(self._pending_input or {}), **user_input}
+        if self._pending_step == "reconfigure":
+            return self.async_update_reload_and_abort(
+                self._get_reconfigure_entry(), data_updates=resolved
+            )
+        return self._create_entry(resolved)
+
+    async def _resolve_post_code(
+        self, user_input: dict[str, Any], step_id: str
+    ) -> tuple[str | None, dict[str, str]]:
+        """Pin a post code to one locality, remembering the form if we must ask.
+
+        Returns the six digit code MeteoSwiss wants, or None with either errors
+        to redisplay or, when there are none, a locality choice left pending.
+        """
+        post_code = str(user_input.get(CONF_POST_CODE, "")).strip()
+        if not post_code.isdigit() or len(post_code) not in (4, 6):
+            return None, {CONF_POST_CODE: "invalid_post_code"}
+        try:
+            localities = await self.hass.async_add_executor_job(
+                _forecastable_localities, post_code)
+        except Exception:
+            _LOGGER.exception("Could not check post code %s", post_code)
+            return None, {CONF_POST_CODE: "cannot_check_post_code"}
+
+        if not localities:
+            return None, {CONF_POST_CODE: "no_forecast_for_post_code"}
+        if len(localities) == 1:
+            return localities[0].code, {}
+
+        self._pending_input = dict(user_input)
+        self._pending_step = step_id
+        self._localities = localities
+        return None, {}
+
+    def _home_locality(self) -> Locality | None:
+        lat = self.hass.config.latitude
+        lng = self.hass.config.longitude
+        if lat is None or lng is None:
+            return None
+        try:
+            return locality_at(lat, lng)
+        except Exception:
+            _LOGGER.exception("Could not look up the home locality")
+            return None
+
+    def _create_entry(self, user_input: dict[str, Any]) -> ConfigFlowResult:
         station_code = user_input.get(CONF_STATION_CODE) or "No Station"
         post_code = user_input.get(CONF_POST_CODE)
         pollen_station_code = user_input.get(CONF_POLLEN_STATION_CODE)
@@ -111,28 +217,39 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle the reconfigure step."""
         _LOGGER.info("Reconfigure with user dict %s", user_input)
 
+        errors: dict[str, str] = {}
         if user_input:
             self._abort_if_unique_id_mismatch()
-            reconfigure_entry = self._get_reconfigure_entry()
-            return self.async_update_reload_and_abort(
-                reconfigure_entry, data_updates=user_input
-            )
+            post_code, errors = await self._resolve_post_code(user_input, "reconfigure")
+            if not errors:
+                if post_code is None:
+                    return await self.async_step_locality()
+                return self.async_update_reload_and_abort(
+                    self._get_reconfigure_entry(),
+                    data_updates={**user_input, CONF_POST_CODE: post_code},
+                )
 
         station_options = await self._get_weather_station_options()
         pollen_station_options = await self._get_pollen_station_options()
 
         reconfigure_entry = self._get_reconfigure_entry()
+        default_post_code = None
         default_station_code = None
         default_pollen_station_code = None
         default_weather_alerts = 1
         if reconfigure_entry is not None:
+            default_post_code = reconfigure_entry.data.get(CONF_POST_CODE)
             default_station_code = reconfigure_entry.data.get(CONF_STATION_CODE)
             default_pollen_station_code = reconfigure_entry.data.get(CONF_POLLEN_STATION_CODE)
             default_weather_alerts = reconfigure_entry.data.get(CONF_WEATHER_WARNINGS_NUMBER)
             if default_weather_alerts is None:
                 default_weather_alerts = 1
 
+        if user_input:
+            default_post_code = user_input.get(CONF_POST_CODE, default_post_code)
+
         schema = vol.Schema({
+            vol.Required(CONF_POST_CODE, default=default_post_code): str,
             vol.Optional(CONF_STATION_CODE, default=default_station_code): SelectSelector(
                 SelectSelectorConfig(
                     options=station_options,
@@ -150,7 +267,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
         })
         return self.async_show_form(
-            step_id="reconfigure", data_schema=schema
+            step_id="reconfigure", data_schema=schema, errors=errors
         )
 
     def format_station_name_for_dropdown(self, station: WeatherStation) -> str:

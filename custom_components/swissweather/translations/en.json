@@ -6,7 +6,10 @@
         "error": {
             "cannot_connect": "Failed to connect",
             "invalid_auth": "Invalid authentication",
-            "unknown": "Unexpected error"
+            "unknown": "Unexpected error",
+            "cannot_check_post_code": "Could not reach MeteoSwiss to check this post code. Please try again.",
+            "no_forecast_for_post_code": "MeteoSwiss has no forecast for this post code.",
+            "invalid_post_code": "A post code is four digits, or six with the two digit locality suffix."
         },
         "step": {
             "user": {
@@ -15,6 +18,21 @@
                     "postCode": "Post number for forecast data",
                     "pollenStationCode": "Pollen measuring station",
                     "weatherWarningsNumber": "Number of weather warnings to show as separate entities (default: 1)"
+                }
+            },
+            "reconfigure": {
+                "data": {
+                    "stationCode": "Weather station for current weather state",
+                    "postCode": "Post number for forecast data",
+                    "pollenStationCode": "Pollen measuring station",
+                    "weatherWarningsNumber": "Number of weather warnings to show as separate entities (default: 1)"
+                }
+            },
+            "locality": {
+                "title": "Which locality?",
+                "description": "Post code {post_code} covers more than one locality, and MeteoSwiss forecasts each of them separately.",
+                "data": {
+                    "postCode": "Locality"
                 }
             }
         }
