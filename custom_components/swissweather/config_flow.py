@@ -59,7 +59,7 @@ class WeatherStation:
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Swiss Weather."""
 
-    VERSION = 2
+    VERSION = 3
 
     def __init__(self) -> None:
         self._pending_input: dict[str, Any] = {}

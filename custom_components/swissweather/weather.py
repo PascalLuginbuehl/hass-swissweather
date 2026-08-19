@@ -37,7 +37,7 @@ async def async_setup_entry(
     coordinator: SwissWeatherDataCoordinator = hass.data[DOMAIN][get_weather_coordinator_key(config_entry)]
     async_add_entities(
         [
-            SwissWeather(coordinator, config_entry.data[CONF_POST_CODE], config_entry.data.get(CONF_STATION_CODE)),
+            SwissWeather(coordinator, config_entry.entry_id, config_entry.data[CONF_POST_CODE], config_entry.data.get(CONF_STATION_CODE)),
         ]
     )
 
@@ -52,6 +52,7 @@ class SwissWeather(CoordinatorEntity[SwissWeatherDataCoordinator], WeatherEntity
     def __init__(
         self,
         coordinator: SwissWeatherDataCoordinator,
+        entryId: str,
         postCode: str,
         stationCode: str,
     ) -> None:
@@ -60,7 +61,8 @@ class SwissWeather(CoordinatorEntity[SwissWeatherDataCoordinator], WeatherEntity
             id_combo = f"{postCode}"
         else:
             id_combo = f"{postCode}-{stationCode}"
-        self._attr_device_info = DeviceInfo(entry_type=DeviceEntryType.SERVICE, name=f"MeteoSwiss at {id_combo}", identifiers={(DOMAIN, f"swissweather-{id_combo}")})
+        self._attr_device_info = DeviceInfo(entry_type=DeviceEntryType.SERVICE, name=f"MeteoSwiss at {id_combo}", identifiers={(DOMAIN, f"swissweather-{entryId}")})
+        self._entryId = entryId
         self._postCode = postCode
         self._attr_attribution = "Source: MeteoSwiss"
 
@@ -78,7 +80,7 @@ class SwissWeather(CoordinatorEntity[SwissWeatherDataCoordinator], WeatherEntity
 
     @property
     def unique_id(self) -> str | None:
-        return f"swiss_weather.{self._postCode}"
+        return f"swiss_weather.{self._entryId}"
 
     @property
     def name(self):
