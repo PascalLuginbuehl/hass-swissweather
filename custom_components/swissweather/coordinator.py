@@ -6,6 +6,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import CONF_POLLEN_STATION_CODE, CONF_POST_CODE, CONF_STATION_CODE, DOMAIN
@@ -55,9 +56,9 @@ class SwissWeatherDataCoordinator(DataUpdateCoordinator[tuple[CurrentWeather | N
                 # Remove all warnings that have expired and sort them via severity.
                 current_forecast.warnings = self._sort_filter_weather_alerts(current_forecast.warnings)
         except UnknownPostCode as e:
-            # Configuration, not connectivity: a traceback would only bury it.
-            _LOGGER.error("%s", e)
-            raise UpdateFailed(str(e)) from e
+            # Permanent and only the user can fix it, so it must not be retried
+            # every ten minutes as a transient failure would be.
+            raise ConfigEntryError(str(e)) from e
         except Exception as e:
             _LOGGER.exception(e)
             raise UpdateFailed(f"Update failed: {e}") from e
