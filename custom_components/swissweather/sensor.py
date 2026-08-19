@@ -119,23 +119,24 @@ async def async_setup_entry(
         id_combo = f"{postCode}"
     else:
         id_combo = f"{postCode}-{stationCode}"
-    deviceInfo = DeviceInfo(entry_type=DeviceEntryType.SERVICE, name=f"MeteoSwiss at {id_combo}", identifiers={(DOMAIN, f"swissweather-{id_combo}")})
-    entities: list[SwissWeatherSensor|SwissPollenSensor] = [SwissWeatherSensor(postCode, deviceInfo, sensorEntry, coordinator) for sensorEntry in SENSORS]
+    entryId: str = config_entry.entry_id
+    deviceInfo = DeviceInfo(entry_type=DeviceEntryType.SERVICE, name=f"MeteoSwiss at {id_combo}", identifiers={(DOMAIN, f"swissweather-{entryId}")})
+    entities: list[SwissWeatherSensor|SwissPollenSensor] = [SwissWeatherSensor(entryId, postCode, deviceInfo, sensorEntry, coordinator) for sensorEntry in SENSORS]
 
     if pollenStationCode is not None:
         pollenCoordinator = hass.data[DOMAIN][get_pollen_coordinator_key(config_entry)]
-        entities += [SwissPollenSensor(postCode, pollenStationCode, deviceInfo, sensorEntry, pollenCoordinator) for sensorEntry in POLLEN_SENSORS]
-        entities += [SwissPollenLevelSensor(postCode, pollenStationCode, deviceInfo, sensorEntry, pollenCoordinator) for sensorEntry in POLLEN_SENSORS if sensorEntry.device_class is None]
+        entities += [SwissPollenSensor(entryId, postCode, pollenStationCode, deviceInfo, sensorEntry, pollenCoordinator) for sensorEntry in POLLEN_SENSORS]
+        entities += [SwissPollenLevelSensor(entryId, postCode, pollenStationCode, deviceInfo, sensorEntry, pollenCoordinator) for sensorEntry in POLLEN_SENSORS if sensorEntry.device_class is None]
 
-    entities.append(SwissWeatherWarningsSensor(postCode, deviceInfo, coordinator))
+    entities.append(SwissWeatherWarningsSensor(entryId, postCode, deviceInfo, coordinator))
     for i in range(0, numberOfWeatherWarnings):
-        entities.append(SwissWeatherSingleWarningSensor(postCode, i, deviceInfo, coordinator))
-        entities.append(SwissWeatherSingleWarningLevelSensor(postCode, i, deviceInfo, coordinator))
+        entities.append(SwissWeatherSingleWarningSensor(entryId, postCode, i, deviceInfo, coordinator))
+        entities.append(SwissWeatherSingleWarningLevelSensor(entryId, postCode, i, deviceInfo, coordinator))
     async_add_entities(entities)
 
 
 class SwissWeatherSensor(CoordinatorEntity[SwissWeatherDataCoordinator], SensorEntity):
-    def __init__(self, post_code:str, device_info: DeviceInfo, sensor_entry:SwissWeatherSensorEntry, coordinator:SwissWeatherDataCoordinator) -> None:
+    def __init__(self, entry_id:str, post_code:str, device_info: DeviceInfo, sensor_entry:SwissWeatherSensorEntry, coordinator:SwissWeatherDataCoordinator) -> None:
         super().__init__(coordinator)
         self.entity_description = SensorEntityDescription(key=sensor_entry.key,
                                                           name=sensor_entry.description,
@@ -144,7 +145,7 @@ class SwissWeatherSensor(CoordinatorEntity[SwissWeatherDataCoordinator], SensorE
                                                           state_class=sensor_entry.state_class)
         self._sensor_entry = sensor_entry
         self._attr_name = f"{sensor_entry.description} at {post_code}"
-        self._attr_unique_id = f"{post_code}.{sensor_entry.key}"
+        self._attr_unique_id = f"{entry_id}.{sensor_entry.key}"
         self._attr_device_info = device_info
         self._attr_attribution = "Source: MeteoSwiss"
 
@@ -178,12 +179,12 @@ def get_color_for_warning_level(level: WarningLevel) -> str:
 class SwissWeatherWarningsSensor(CoordinatorEntity[SwissWeatherDataCoordinator], SensorEntity):
     """Shows count of current alterts and their content as attributes."""
 
-    def __init__(self, post_code:str, device_info: DeviceInfo, coordinator:SwissWeatherDataCoordinator) -> None:
+    def __init__(self, entry_id:str, post_code:str, device_info: DeviceInfo, coordinator:SwissWeatherDataCoordinator) -> None:
         super().__init__(coordinator)
         self.entity_description = SensorEntityDescription(key="warnings",
                                                           name="Weather Warnings")
         self._attr_name = f"Weather warnings at {post_code}"
-        self._attr_unique_id = f"{post_code}.warnings"
+        self._attr_unique_id = f"{entry_id}.warnings"
         self._attr_device_info = device_info
         self._attr_attribution = "Source: MeteoSwiss"
         self._attr_suggested_display_precision = 0
@@ -229,7 +230,7 @@ class SwissWeatherSingleWarningSensor(CoordinatorEntity[SwissWeatherDataCoordina
 
     index = 0
 
-    def __init__(self, post_code:str, index:int, device_info: DeviceInfo, coordinator:SwissWeatherDataCoordinator) -> None:
+    def __init__(self, entry_id:str, post_code:str, index:int, device_info: DeviceInfo, coordinator:SwissWeatherDataCoordinator) -> None:
         super().__init__(coordinator)
         if index == 0:
             key = "warnings.most_severe"
@@ -245,7 +246,7 @@ class SwissWeatherSingleWarningSensor(CoordinatorEntity[SwissWeatherDataCoordina
                                                           name=name,
                                                           device_class=SensorDeviceClass.ENUM)
         self._attr_name = attr_name
-        self._attr_unique_id = f"{post_code}.warning.{index}"
+        self._attr_unique_id = f"{entry_id}.warning.{index}"
         self._attr_device_info = device_info
         self._attr_attribution = "Source: MeteoSwiss"
         self._attr_options = [get_warning_enum_to_name(warningType) for warningType in WarningType]
@@ -298,7 +299,7 @@ class SwissWeatherSingleWarningLevelSensor(CoordinatorEntity[SwissWeatherDataCoo
     """Shows severity of the weather warning."""
     index = 0
 
-    def __init__(self, post_code:str, index:int, device_info: DeviceInfo, coordinator:SwissWeatherDataCoordinator) -> None:
+    def __init__(self, entry_id:str, post_code:str, index:int, device_info: DeviceInfo, coordinator:SwissWeatherDataCoordinator) -> None:
         super().__init__(coordinator)
         if index == 0:
             key = "warnings.most_severe.level"
@@ -314,7 +315,7 @@ class SwissWeatherSingleWarningLevelSensor(CoordinatorEntity[SwissWeatherDataCoo
                                                           name=name,
                                                           device_class=SensorDeviceClass.ENUM)
         self._attr_name = attr_name
-        self._attr_unique_id = f"{post_code}.warning.level.{index}"
+        self._attr_unique_id = f"{entry_id}.warning.level.{index}"
         self._attr_device_info = device_info
         self._attr_attribution = "Source: MeteoSwiss"
         self._attr_options = [get_warning_enum_to_name(warningType) for warningType in WarningLevel]
@@ -356,7 +357,7 @@ class SwissWeatherSingleWarningLevelSensor(CoordinatorEntity[SwissWeatherDataCoo
 
 class SwissPollenSensor(CoordinatorEntity[SwissPollenDataCoordinator], SensorEntity):
 
-    def __init__(self, post_code:str, station_code: str, device_info: DeviceInfo, sensor_entry:SwissPollenSensorEntry, coordinator:SwissPollenDataCoordinator) -> None:
+    def __init__(self, entry_id:str, post_code:str, station_code: str, device_info: DeviceInfo, sensor_entry:SwissPollenSensorEntry, coordinator:SwissPollenDataCoordinator) -> None:
         super().__init__(coordinator)
         state_class = SensorStateClass.MEASUREMENT
         unit = CONCENTRATION_PARTS_PER_CUBIC_METER
@@ -369,7 +370,7 @@ class SwissPollenSensor(CoordinatorEntity[SwissPollenDataCoordinator], SensorEnt
                                                         state_class=state_class)
         self._sensor_entry = sensor_entry
         self._attr_name = f"{sensor_entry.description} at {post_code} - {station_code}"
-        self._attr_unique_id = f"pollen-{post_code}.{sensor_entry.key}"
+        self._attr_unique_id = f"pollen-{entry_id}.{sensor_entry.key}"
         self._attr_device_info = device_info
         self._attr_device_class = sensor_entry.device_class
         self._attr_suggested_display_precision = 0
@@ -399,14 +400,14 @@ def get_color_for_pollen_level(level: int) -> str:
 
 class SwissPollenLevelSensor(CoordinatorEntity[SwissPollenDataCoordinator], SensorEntity):
 
-    def __init__(self, post_code:str, station_code: str, device_info: DeviceInfo, sensor_entry:SwissPollenSensorEntry, coordinator:SwissPollenDataCoordinator) -> None:
+    def __init__(self, entry_id:str, post_code:str, station_code: str, device_info: DeviceInfo, sensor_entry:SwissPollenSensorEntry, coordinator:SwissPollenDataCoordinator) -> None:
         super().__init__(coordinator)
         self.entity_description = SensorEntityDescription(key=sensor_entry.key,
                                                         name=sensor_entry.description,
                                                         device_class=SensorDeviceClass.ENUM)
         self._sensor_entry = sensor_entry
         self._attr_name = f"{sensor_entry.description} level at {post_code} - {station_code}"
-        self._attr_unique_id = f"pollen-level-{post_code}.{sensor_entry.key}"
+        self._attr_unique_id = f"pollen-level-{entry_id}.{sensor_entry.key}"
         self._attr_device_info = device_info
         self._attr_options = [PollenLevel.NONE, PollenLevel.LOW, PollenLevel.MEDIUM, PollenLevel.STRONG, PollenLevel.VERY_STRONG]
         self._attr_attribution = "Source: MeteoSwiss"
