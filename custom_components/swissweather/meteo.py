@@ -14,6 +14,7 @@ CURRENT_CONDITION_URL= 'https://data.geo.admin.ch/ch.meteoschweiz.messwerte-aktu
 
 FORECAST_URL= "https://app-prod-ws.meteoswiss-app.ch/v2/plzDetail?plz={}"
 FORECAST_USER_AGENT = "android-31 ch.admin.meteoswiss-2160000"
+FORECAST_TIMEOUT = 15
 
 
 class UnknownPostCode(Exception):
@@ -240,8 +241,18 @@ class MeteoClient:
 
 
     def has_forecast(self, postCode) -> bool:
-        """Whether MeteoSwiss knows a locality code, without parsing the payload."""
-        return _is_known_post_code(self._get_forecast_json(postCode, self.language))
+        """Whether MeteoSwiss forecasts a locality code.
+
+        HEAD is enough and downloads no body: the API answers 200 for a code it
+        forecasts and 500 for one it does not. A connection failure raises rather
+        than reading as an unknown code, so a caller can tell the two apart.
+        """
+        url = FORECAST_URL.format(plz_query(postCode))
+        response = requests.head(url, timeout=FORECAST_TIMEOUT, headers={
+            "User-Agent": FORECAST_USER_AGENT,
+            "Accept": "application/json",
+        })
+        return response.status_code == 200
 
     ## Forecast
     def get_forecast(self, postCode) -> WeatherForecast | None:
